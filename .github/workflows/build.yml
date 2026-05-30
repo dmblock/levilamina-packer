@@ -88,19 +88,14 @@ jobs:
         run: |
           $tag = "${{ steps.get-version.outputs.bds_version }}"
           Write-Host "Checking for existing release: $tag"
-          $exists = $null
           try {
-            $exists = gh release view $tag --json tagName -q ".tagName" 2>$null
-          } catch {}
-          if ($exists) {
+            $response = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag" -Headers @{Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}"} -ErrorAction Stop
             Write-Host "Release $tag already exists, skipping"
             echo "skip=true" >> $env:GITHUB_OUTPUT
-          } else {
+          } catch {
             Write-Host "Release $tag not found, will create"
             echo "skip=false" >> $env:GITHUB_OUTPUT
           }
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Remove cache folder
         if: steps.check.outputs.skip != 'true'
