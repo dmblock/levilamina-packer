@@ -1,0 +1,138 @@
+name: Sync All LeviLamina Releases
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  check-versions:
+    name: Find missing BDS versions
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Get all LegacyScriptEngine release tags
+        id: get-tags
+        uses: actions/github-script@v7
+        with:
+          result-encoding: json
+          script: |
+            const tags = [];
+            let page = 1;
+            while (true) {
+              const { data } = await github.rest.repos.listReleases({
+                owner: 'LiteLDev',
+                repo: 'LegacyScriptEngine',
+                per_page: 100,
+                page
+              });
+              if (data.length === 0) break;
+              data.forEach(release => tags.push(release.tag_name));
+              page++;
+            }
+            return tags;
+
+      - name: Generate build matrix
+        id: set-matrix
+        run: |
+          ALL_TAGS='${{ steps.get-tags.outputs.result }}'
+          MATRIX=$(echo "$ALL_TAGS" | jq -c '{include: map({lse: .})}')
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  build:
+    name: Package ${{ matrix.lse }}
+    needs: check-versions
+    strategy:
+      matrix: ${{ fromJSON(needs.check-versions.outputs.matrix) }}
+      fail-fast: false
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup lip
+        shell: pwsh
+        run: |
+          $latestReleaseUrl = "https://api.github.com/repos/futrime/lip/releases/latest"
+          $response = Invoke-RestMethod -Uri $latestReleaseUrl
+          $latestVersion = $response.tag_name
+          $versionNumber = $latestVersion -replace '^v', ''
+          $lipUrl = "https://github.com/futrime/lip/releases/download/$latestVersion/lip-$versionNumber-win-x64.zip"
+          curl.exe -L -o lip.zip $lipUrl
+          Expand-Archive -Path lip.zip -DestinationPath lip
+          $lipPath = Join-Path (Resolve-Path lip) "lip.exe"
+          echo "LIP_PATH=$lipPath" >> $env:GITHUB_ENV
+          & $lipPath config set go_module_proxy https://goproxy.cn
+          & $lipPath config set github_proxy https://github.bibk.top
+
+      - name: Install and get BDS version
+        id: get-version
+        shell: pwsh
+        run: |
+          $lseVersion = "${{ matrix.lse }}" -replace '^v', ''
+          mkdir temp_server
+          cd temp_server
+          & $env:LIP_PATH install "github.com/LiteLDev/LegacyScriptEngine@$lseVersion"
+          $bdsVersion = (& $env:LIP_PATH list | Select-String "bds@" | ForEach-Object { $_ -replace '.*bds@', '' }).Trim()
+          Write-Host "LSE: $lseVersion -> BDS: $bdsVersion"
+          echo "bds_version=$bdsVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Check existing release
+        id: check
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.get-version.outputs.bds_version }}"
+          Write-Host "Checking for existing release: $tag"
+          $exists = $null
+          try {
+            $exists = gh release view $tag --json tagName -q ".tagName" 2>$null
+          } catch {}
+          if ($exists) {
+            Write-Host "Release $tag already exists, skipping"
+            echo "skip=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Host "Release $tag not found, will create"
+            echo "skip=false" >> $env:GITHUB_OUTPUT
+          }
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove cache folder
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          if (Test-Path temp_server\.cache) {
+            Remove-Item temp_server\.cache -Recurse -Force
+          }
+
+      - name: Package into ZIP
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path temp_server\* -DestinationPath ${{ steps.get-version.outputs.bds_version }}.zip
+
+      - name: Create Release and Upload Asset
+        if: steps.check.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get-version.outputs.bds_version }}
+          name: ${{ steps.get-version.outputs.bds_version }}
+          body: |
+            BDS ${{ steps.get-version.outputs.bds_version }} with LeviLamina and LegacyScriptEngine
+
+            **Installation:** Unzip and run `bedrock_server_mod.exe` to start the server.
+          files: ${{ steps.get-version.outputs.bds_version }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean up
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item temp_server -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item *.zip -Force -ErrorAction SilentlyContinue
