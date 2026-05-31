@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
+      old_matrix: ${{ steps.set-old-matrix.outputs.matrix }}
     steps:
       - name: Get all LegacyScriptEngine release tags
         id: get-tags
@@ -37,7 +38,7 @@ jobs:
                 const parts = version.split('.');
                 const major = parseInt(parts[0]) || 0;
                 const minor = parseInt(parts[1]) || 0;
-                if (major > 0 || minor >= 10) {
+                if (!release.prerelease && major === 0 && minor >= 10 || major > 0) {
                   tags.push(release.tag_name);
                 }
               });
@@ -45,20 +46,67 @@ jobs:
             }
             return tags;
 
-      - name: Generate build matrix
+      - name: Generate build matrix (lip)
         id: set-matrix
         run: |
           ALL_TAGS='${{ steps.get-tags.outputs.result }}'
           MATRIX=$(echo "$ALL_TAGS" | jq -c '{include: map({lse: .})}')
           echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
 
+      - name: Get old versions from pingguo114514
+        id: get-old
+        uses: actions/github-script@v7
+        with:
+          result-encoding: json
+          script: |
+            const releases = [];
+            let page = 1;
+            while (true) {
+              const { data } = await github.rest.repos.listReleases({
+                owner: 'pingguo114514',
+                repo: 'LL-Packer',
+                per_page: 100,
+                page
+              });
+              if (data.length === 0) break;
+              data.forEach(release => {
+                const tag = release.tag_name;
+                const match = tag.match(/^(.+)&(.+)$/);
+                if (!match) return;
+                const lseVersion = match[2];
+                const lseParts = lseVersion.replace(/^v/, '').split('.');
+                const lseMajor = parseInt(lseParts[0]) || 0;
+                const lseMinor = parseInt(lseParts[1]) || 0;
+                if (lseMajor === 0 && lseMinor < 10) {
+                  releases.push({
+                    lse: lseVersion,
+                    ll: match[1],
+                    asset_id: release.assets[0]?.id,
+                    asset_name: release.assets[0]?.name,
+                    download_url: release.assets[0]?.browser_download_url
+                  });
+                }
+              });
+              page++;
+            }
+            return releases;
+
+      - name: Generate old build matrix
+        id: set-old-matrix
+        run: |
+          OLD='${{ steps.get-old.outputs.result }}'
+          MATRIX=$(echo "$OLD" | jq -c '{include: .}')
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
   build:
-    name: Package ${{ matrix.lse }}
+    name: Package ${{ matrix.lse }} (lip)
     needs: check-versions
     strategy:
       matrix: ${{ fromJSON(needs.check-versions.outputs.matrix) }}
       fail-fast: false
+      max-parallel: 5
     runs-on: windows-latest
+    continue-on-error: true
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -130,6 +178,121 @@ jobs:
 
             **Installation:** Unzip and run `bedrock_server_mod.exe` to start the server.
           files: ${{ steps.get-version.outputs.bds_version }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clean up
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item temp_server -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item *.zip -Force -ErrorAction SilentlyContinue
+
+  build-old:
+    name: Package ${{ matrix.lse }} (mirror)
+    needs: check-versions
+    strategy:
+      matrix: ${{ fromJSON(needs.check-versions.outputs.old_matrix) }}
+      fail-fast: false
+      max-parallel: 3
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup lip
+        shell: pwsh
+        run: |
+          $latestReleaseUrl = "https://api.github.com/repos/futrime/lip/releases/latest"
+          $response = Invoke-RestMethod -Uri $latestReleaseUrl
+          $latestVersion = $response.tag_name
+          $versionNumber = $latestVersion -replace '^v', ''
+          $lipUrl = "https://github.com/futrime/lip/releases/download/$latestVersion/lip-$versionNumber-win-x64.zip"
+          curl.exe -L -o lip.zip $lipUrl
+          Expand-Archive -Path lip.zip -DestinationPath lip
+          $lipPath = Join-Path (Resolve-Path lip) "lip.exe"
+          echo "LIP_PATH=$lipPath" >> $env:GITHUB_ENV
+          & $lipPath config set go_module_proxy https://goproxy.cn
+          & $lipPath config set github_proxy https://github.bibk.top
+
+      - name: Download and extract
+        id: extract
+        shell: pwsh
+        run: |
+          $url = "${{ matrix.download_url }}"
+          $name = "${{ matrix.asset_name }}"
+          Write-Host "Downloading $name"
+          curl.exe -L -o "$name" "$url"
+
+          mkdir temp_server
+          Expand-Archive -Path "$name" -DestinationPath temp_server
+
+          $metadataDir = Get-ChildItem -Path "temp_server\.lip\metadata" -Directory | Select-Object -First 1
+          $bdsJson = Join-Path $metadataDir.FullName "github.com%2FLiteLDev%2Fbds.json"
+          if (Test-Path $bdsJson) {
+            $bdsVersion = (Get-Content $bdsJson | ConvertFrom-Json).version
+          } else {
+            $bdsVersion = "unknown"
+          }
+          Write-Host "BDS version from metadata: $bdsVersion"
+          echo "bds_version=$bdsVersion" >> $env:GITHUB_OUTPUT
+
+      - name: Check existing release
+        id: check
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.extract.outputs.bds_version }}"
+          Write-Host "Checking for existing release: $tag"
+          try {
+            $response = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag" -Headers @{Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}"} -ErrorAction Stop
+            Write-Host "Release $tag already exists, skipping"
+            echo "skip=true" >> $env:GITHUB_OUTPUT
+          } catch {
+            Write-Host "Release $tag not found, will create"
+            echo "skip=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Remove old metadata and reinstall BDS
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          cd temp_server
+          Remove-Item -Recurse -Force .lip -ErrorAction SilentlyContinue
+          & $env:LIP_PATH install "github.com/LiteLDev/bds@${{ steps.extract.outputs.bds_version }}"
+
+      - name: Run PeEditor
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          cd temp_server
+          .\PeEditor.exe -mb
+
+      - name: Remove cache folder
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          if (Test-Path temp_server\.cache) {
+            Remove-Item temp_server\.cache -Recurse -Force
+          }
+
+      - name: Package into ZIP
+        if: steps.check.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path temp_server\* -DestinationPath ${{ steps.extract.outputs.bds_version }}.zip
+
+      - name: Create Release and Upload Asset
+        if: steps.check.outputs.skip != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.extract.outputs.bds_version }}
+          name: ${{ steps.extract.outputs.bds_version }}
+          body: |
+            BDS ${{ steps.extract.outputs.bds_version }} with LeviLamina ${{ matrix.ll }} and LegacyScriptEngine ${{ matrix.lse }}
+
+            **Installation:** Unzip and run `bedrock_server_mod.exe` to start the server.
+          files: ${{ steps.extract.outputs.bds_version }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
