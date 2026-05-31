@@ -229,17 +229,26 @@ jobs:
           Expand-Archive -Path "$name" -DestinationPath temp_server
 
           $bdsVersion = "unknown"
-          if (Test-Path "temp_server\.lip") {
+          if (Test-Path "temp_server\.cache") {
+            $cacheFiles = Get-ChildItem -Path "temp_server\.cache" -Recurse -Filter "*.zip"
+            if ($cacheFiles) {
+              $cacheFile = $cacheFiles[0].Name
+              Write-Host "Found cache file: $cacheFile"
+              if ($cacheFile -match 'bedrock-server-([\d.]+)\.zip') {
+                $bdsVersion = $matches[1]
+                Write-Host "BDS version from cache: $bdsVersion"
+              }
+            }
+          }
+          if ($bdsVersion -eq "unknown" -and (Test-Path "temp_server\.lip")) {
             $jsonFiles = Get-ChildItem -Path "temp_server\.lip" -Recurse -Filter "*bds*.json"
             if ($jsonFiles) {
               $bdsJson = $jsonFiles[0].FullName
-              Write-Host "Found BDS json: $bdsJson"
               $bdsData = Get-Content $bdsJson | ConvertFrom-Json
               if ($bdsData.commands.post_install) {
                 $postInstall = $bdsData.commands.post_install[0]
-                if ($postInstall -match 'version://[^/]+/([^"]+)') {
+                if ($postInstall -match 'version://[^/]+/([\d.]+)') {
                   $bdsVersion = $matches[1]
-                  Write-Host "BDS version from command: $bdsVersion"
                 }
               }
               if ($bdsVersion -eq "unknown") {
@@ -272,7 +281,7 @@ jobs:
             echo "skip=false" >> $env:GITHUB_OUTPUT
           }
 
-      - name: Reinstall BDS with bdsdown
+      - name: Reinstall BDS with lip
         if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
@@ -280,9 +289,12 @@ jobs:
           if (Test-Path ".lip") {
             Remove-Item -Recurse -Force .lip
           }
+          if (Test-Path ".cache") {
+            Remove-Item -Recurse -Force .cache
+          }
           $bdsVersion = "${{ steps.extract.outputs.bds_version }}"
-          if (Test-Path "bdsdown.exe") {
-            .\bdsdown.exe -y --source "version://windows/$bdsVersion"
+          if ($bdsVersion -ne "unknown") {
+            & $env:LIP_PATH install "github.com/LiteLDev/bds@$bdsVersion"
           }
 
       - name: Run PeEditor
