@@ -125,6 +125,8 @@ jobs:
       max-parallel: 5
     runs-on: windows-latest
     continue-on-error: true
+    outputs:
+      synced_lse: ${{ steps.save-lse.outputs.lse }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -199,18 +201,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Append to cache
+      - name: Save synced LSE tag
+        id: save-lse
         if: steps.check.outputs.skip != 'true' && success()
         shell: pwsh
         run: |
-          echo "${{ matrix.lse }}" >> cache.txt
-
-      - name: Upload updated cache
-        if: steps.check.outputs.skip != 'true' && success()
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          file_pattern: cache.txt
-          commit_message: "Sync: ${{ matrix.lse }}"
+          echo "lse=${{ matrix.lse }}" >> $env:GITHUB_OUTPUT
 
       - name: Clean up
         if: always()
@@ -228,6 +224,8 @@ jobs:
       max-parallel: 3
     runs-on: windows-latest
     continue-on-error: true
+    outputs:
+      synced_lse: ${{ steps.save-lse.outputs.lse }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -344,18 +342,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Append to cache
+      - name: Save synced LSE tag
+        id: save-lse
         if: steps.check.outputs.skip != 'true' && success()
         shell: pwsh
         run: |
-          echo "${{ matrix.lse }}" >> cache.txt
-
-      - name: Upload updated cache
-        if: steps.check.outputs.skip != 'true' && success()
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          file_pattern: cache.txt
-          commit_message: "Sync: ${{ matrix.lse }}"
+          echo "lse=${{ matrix.lse }}" >> $env:GITHUB_OUTPUT
 
       - name: Clean up
         if: always()
@@ -363,3 +355,25 @@ jobs:
         run: |
           Remove-Item temp_server -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item *.zip -Force -ErrorAction SilentlyContinue
+
+  update-cache:
+    name: Update cache.txt
+    needs: [build, build-old]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Collect synced tags
+        id: collect
+        run: |
+          echo "${{ toJSON(needs.*.outputs.synced_lse) }}" | jq -r '.[] | select(. != null and . != "")' >> cache.txt
+          sort -u cache.txt -o cache.txt
+          cat cache.txt
+
+      - name: Commit updated cache
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          file_pattern: cache.txt
+          commit_message: "Update cache.txt"
