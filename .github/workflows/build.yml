@@ -228,22 +228,31 @@ jobs:
           mkdir temp_server
           Expand-Archive -Path "$name" -DestinationPath temp_server
 
-          $metadataDir = Get-ChildItem -Path "temp_server\.lip\metadata" -Directory | Select-Object -First 1
-          $bdsJson = Join-Path $metadataDir.FullName "github.com%2FLiteLDev%2Fbds.json"
-          if (Test-Path $bdsJson) {
-            $bdsVersion = (Get-Content $bdsJson | ConvertFrom-Json).version
-          } else {
-            $bdsVersion = "unknown"
+          $bdsVersion = "unknown"
+          if (Test-Path "temp_server\.lip") {
+            $jsonFiles = Get-ChildItem -Path "temp_server\.lip" -Recurse -Filter "*bds*.json"
+            if ($jsonFiles) {
+              $bdsJson = $jsonFiles[0].FullName
+              Write-Host "Found BDS json: $bdsJson"
+              $bdsVersion = (Get-Content $bdsJson | ConvertFrom-Json).version
+            }
           }
-          Write-Host "BDS version from metadata: $bdsVersion"
+          Write-Host "BDS version: $bdsVersion"
           echo "bds_version=$bdsVersion" >> $env:GITHUB_OUTPUT
 
-      - name: Check existing release
+      - name: Determine tag and check existing
         id: check
         shell: pwsh
         run: |
-          $tag = "${{ steps.extract.outputs.bds_version }}"
-          Write-Host "Checking for existing release: $tag"
+          $bdsVersion = "${{ steps.extract.outputs.bds_version }}"
+          if ($bdsVersion -eq "unknown") {
+            $tag = "${{ matrix.ll }}-${{ matrix.lse }}" -replace '[^a-zA-Z0-9._-]', '-'
+          } else {
+            $tag = $bdsVersion
+          }
+          Write-Host "Tag: $tag"
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+
           try {
             $response = Invoke-RestMethod -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/$tag" -Headers @{Authorization = "Bearer ${{ secrets.GITHUB_TOKEN }}"} -ErrorAction Stop
             Write-Host "Release $tag already exists, skipping"
@@ -258,7 +267,9 @@ jobs:
         shell: pwsh
         run: |
           cd temp_server
-          Remove-Item -Recurse -Force .lip -ErrorAction SilentlyContinue
+          if (Test-Path ".lip") {
+            Remove-Item -Recurse -Force .lip
+          }
           & $env:LIP_PATH install "github.com/LiteLDev/bds@${{ steps.extract.outputs.bds_version }}"
 
       - name: Run PeEditor
@@ -266,7 +277,9 @@ jobs:
         shell: pwsh
         run: |
           cd temp_server
-          .\PeEditor.exe -mb
+          if (Test-Path "PeEditor.exe") {
+            .\PeEditor.exe -mb
+          }
 
       - name: Remove cache folder
         if: steps.check.outputs.skip != 'true'
@@ -280,19 +293,19 @@ jobs:
         if: steps.check.outputs.skip != 'true'
         shell: pwsh
         run: |
-          Compress-Archive -Path temp_server\* -DestinationPath ${{ steps.extract.outputs.bds_version }}.zip
+          Compress-Archive -Path temp_server\* -DestinationPath ${{ steps.check.outputs.tag }}.zip
 
       - name: Create Release and Upload Asset
         if: steps.check.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.extract.outputs.bds_version }}
-          name: ${{ steps.extract.outputs.bds_version }}
+          tag_name: ${{ steps.check.outputs.tag }}
+          name: ${{ steps.check.outputs.tag }}
           body: |
             BDS ${{ steps.extract.outputs.bds_version }} with LeviLamina ${{ matrix.ll }} and LegacyScriptEngine ${{ matrix.lse }}
 
             **Installation:** Unzip and run `bedrock_server_mod.exe` to start the server.
-          files: ${{ steps.extract.outputs.bds_version }}.zip
+          files: ${{ steps.check.outputs.tag }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
