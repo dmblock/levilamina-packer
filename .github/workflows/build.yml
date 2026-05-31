@@ -1,4 +1,4 @@
- name: Sync All LeviLamina Releases
+name: Sync All LeviLamina Releases
 
 on:
   schedule:
