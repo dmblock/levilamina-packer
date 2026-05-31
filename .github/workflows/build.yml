@@ -17,12 +17,27 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       old_matrix: ${{ steps.set-old-matrix.outputs.matrix }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read synced cache
+        id: cache
+        run: |
+          if [ -f cache.txt ]; then
+            SYNCED=$(cat cache.txt | tr '\n' ' ')
+            echo "Synced: $SYNCED"
+            echo "synced=$SYNCED" >> $GITHUB_OUTPUT
+          else
+            echo "synced=" >> $GITHUB_OUTPUT
+          fi
+
       - name: Get all LegacyScriptEngine release tags
         id: get-tags
         uses: actions/github-script@v7
         with:
           result-encoding: json
           script: |
+            const synced = '${{ steps.cache.outputs.synced }}'.split(' ').filter(Boolean);
             const tags = [];
             let page = 1;
             while (true) {
@@ -34,6 +49,7 @@ jobs:
               });
               if (data.length === 0) break;
               data.forEach(release => {
+                if (synced.includes(release.tag_name)) return;
                 const version = release.tag_name.replace(/^v/, '');
                 const parts = version.split('.');
                 const major = parseInt(parts[0]) || 0;
@@ -59,6 +75,7 @@ jobs:
         with:
           result-encoding: json
           script: |
+            const synced = '${{ steps.cache.outputs.synced }}'.split(' ').filter(Boolean);
             const releases = [];
             let page = 1;
             while (true) {
@@ -74,6 +91,7 @@ jobs:
                 const match = tag.match(/^(.+)&(.+)$/);
                 if (!match) return;
                 const lseVersion = match[2];
+                if (synced.includes(lseVersion)) return;
                 const lseParts = lseVersion.replace(/^v/, '').split('.');
                 const lseMajor = parseInt(lseParts[0]) || 0;
                 const lseMinor = parseInt(lseParts[1]) || 0;
@@ -180,6 +198,19 @@ jobs:
           files: ${{ steps.get-version.outputs.bds_version }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Append to cache
+        if: steps.check.outputs.skip != 'true' && success()
+        shell: pwsh
+        run: |
+          echo "${{ matrix.lse }}" >> cache.txt
+
+      - name: Upload updated cache
+        if: steps.check.outputs.skip != 'true' && success()
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          file_pattern: cache.txt
+          commit_message: "Sync: ${{ matrix.lse }}"
 
       - name: Clean up
         if: always()
@@ -312,6 +343,19 @@ jobs:
           files: ${{ steps.check.outputs.tag }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Append to cache
+        if: steps.check.outputs.skip != 'true' && success()
+        shell: pwsh
+        run: |
+          echo "${{ matrix.lse }}" >> cache.txt
+
+      - name: Upload updated cache
+        if: steps.check.outputs.skip != 'true' && success()
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          file_pattern: cache.txt
+          commit_message: "Sync: ${{ matrix.lse }}"
 
       - name: Clean up
         if: always()
