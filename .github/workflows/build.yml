@@ -229,32 +229,11 @@ jobs:
           Expand-Archive -Path "$name" -DestinationPath temp_server
 
           $bdsVersion = "unknown"
-          if (Test-Path "temp_server\.cache") {
-            $cacheFiles = Get-ChildItem -Path "temp_server\.cache" -Recurse -Filter "*.zip"
-            if ($cacheFiles) {
-              $cacheFile = $cacheFiles[0].Name
-              Write-Host "Found cache file: $cacheFile"
-              if ($cacheFile -match 'bedrock-server-([\d.]+)\.zip') {
-                $bdsVersion = $matches[1]
-                Write-Host "BDS version from cache: $bdsVersion"
-              }
-            }
-          }
-          if ($bdsVersion -eq "unknown" -and (Test-Path "temp_server\.lip")) {
-            $jsonFiles = Get-ChildItem -Path "temp_server\.lip" -Recurse -Filter "*bds*.json"
-            if ($jsonFiles) {
-              $bdsJson = $jsonFiles[0].FullName
-              $bdsData = Get-Content $bdsJson | ConvertFrom-Json
-              if ($bdsData.commands.post_install) {
-                $postInstall = $bdsData.commands.post_install[0]
-                if ($postInstall -match 'version://[^/]+/([\d.]+)') {
-                  $bdsVersion = $matches[1]
-                }
-              }
-              if ($bdsVersion -eq "unknown") {
-                $bdsVersion = $bdsData.version
-              }
-            }
+          $bdsJsonPath = "temp_server\.lip\metadata\github.com%2FLiteLDev%2Fbds.json"
+          if (Test-Path $bdsJsonPath) {
+            $bdsData = Get-Content $bdsJsonPath | ConvertFrom-Json
+            $bdsVersion = $bdsData.version
+            Write-Host "BDS version from metadata: $bdsVersion"
           }
           Write-Host "BDS version: $bdsVersion"
           echo "bds_version=$bdsVersion" >> $env:GITHUB_OUTPUT
