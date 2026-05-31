@@ -153,10 +153,13 @@ jobs:
           $lseVersion = "${{ matrix.lse }}" -replace '^v', ''
           mkdir temp_server
           cd temp_server
-          & $env:LIP_PATH install "github.com/LiteLDev/LegacyScriptEngine@$lseVersion#lua"
-          & $env:LIP_PATH install "github.com/LiteLDev/LegacyScriptEngine@$lseVersion#quickjs"
-          & $env:LIP_PATH install "github.com/LiteLDev/LegacyScriptEngine@$lseVersion#nodejs"
+          & $env:LIP_PATH install "github.com/LiteLDev/LegacyScriptEngine#lua@$lseVersion"
+          & $env:LIP_PATH install "github.com/LiteLDev/LegacyScriptEngine#quickjs@$lseVersion"
+          & $env:LIP_PATH install "github.com/LiteLDev/LegacyScriptEngine#nodejs@$lseVersion"
           $bdsVersion = (& $env:LIP_PATH list | Select-String "bds@" | ForEach-Object { $_ -replace '.*bds@', '' }).Trim()
+          if (-not $bdsVersion) {
+            $bdsVersion = "unknown"
+          }
           Write-Host "LSE: $lseVersion -> BDS: $bdsVersion"
           echo "bds_version=$bdsVersion" >> $env:GITHUB_OUTPUT
 
